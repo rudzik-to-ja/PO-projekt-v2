@@ -1,52 +1,66 @@
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel, condecimal
 from datetime import datetime
-from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
+
+
+class Reading:
+    def __init__(
+        self,
+        timestamp: datetime,
+        temperature: float,
+        air_quality: condecimal(max_digits=5, decimal_places=2),
+    ):
+        self.timestamp = timestamp
+        self.temperature = temperature
+        self.air_quality = air_quality
+
+
+class ReadingService:
+    def __init__(self):
+        self.readings = []
+
+    def add_reading(self, reading: Reading):
+        self.readings.append(reading)
+
+    def get_nearest_reading(self, target_time: datetime) -> Optional[Reading]:
+        nearest_reading = min(
+            self.readings, key=lambda r: abs(r.timestamp - target_time), default=None
+        )
+        return nearest_reading
+
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-
-class Reading(BaseModel):
+class AirQualityReading(BaseModel):
     timestamp: datetime
-    temperature: float = Field(..., ge=-50, le=60, description="Temp. in °C")
-    pressure: int = Field(..., ge=800, le=1100, description="Pressure in hPa")
-    humidity: float = Field(..., ge=0, le=100, description="Humidity %")
-    pm10: Optional[float]
-    pm25: Optional[float]
+    temperature: float
+    air_quality: condecimal(max_digits=5, decimal_places=2)
 
 
-database: List[Reading] = []
+reading_service = ReadingService()
 
 
 @app.post("/readings/")
-def add_reading(reading: Reading):
-    database.append(reading)
+async def create_reading(reading: AirQualityReading):
+    reading_service.add_reading(Reading(**reading.dict()))
     return {"message": "Reading added successfully"}
 
 
-@app.get("/readings/nearest")
-def get_nearest_reading(datetime_str: str = Query(..., alias="datetime")):
-    try:
-        target = datetime.fromisoformat(datetime_str)
-    except ValueError:
+@app.get("/readings/")
+async def get_nearest_reading(target_datetime: datetime):
+    reading = reading_service.get_nearest_reading(target_datetime)
+    if reading:
+        return {
+            "timestamp": reading.timestamp,
+            "temperature": reading.temperature,
+            "air_quality": reading.air_quality,
+        }
+    else:
         raise HTTPException(
-            status_code=400,
-            detail="Invalid datetime format. Use ISO format (e.g. 2023-10-10T14:30:00)",
+            status_code=404, detail="No reading found for the given time"
         )
-
-    if not database:
-        raise HTTPException(status_code=404, detail="No readings available")
-
-    nearest = min(database, key=lambda r: abs(r.timestamp - target))
-    return nearest
 
 
 if __name__ == "__main__":
